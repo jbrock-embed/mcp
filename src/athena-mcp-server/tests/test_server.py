@@ -21,6 +21,7 @@ from awslabs.athena_mcp_server.models import (
     TableInfo,
 )
 from awslabs.athena_mcp_server.server import (
+    _get_athena_client,
     _handle_athena_error,
     execute_query,
     get_query_results,
@@ -40,7 +41,13 @@ def mock_athena_client(mocker):
     """Create a mock Athena client."""
     mock_client = mocker.MagicMock()
     mocker.patch('awslabs.athena_mcp_server.server.boto3.client', return_value=mock_client)
-    return mock_client
+
+    yield mock_client
+
+    # Clear the LRU cache after mocked tests finish to ensure live integration
+    # tests and subsequent tests get fresh, real boto3 clients instead of
+    # cached mock clients that would cause validation errors
+    _get_athena_client.cache_clear()
 
 
 @pytest.fixture
