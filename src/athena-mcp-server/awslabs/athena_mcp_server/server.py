@@ -93,6 +93,61 @@ def _get_athena_client(region: str = ''):
         raise
 
 
+def _extract_columns_and_rows(
+    response: dict[str, Any],
+) -> tuple[list[ColumnInfo], list[dict[str, str]]]:
+    """Parse AWS Athena query results response into column info and rows.
+
+    Args:
+        response: Raw AWS Athena get_query_results response
+
+    Returns:
+        Tuple of (column_info, rows) where rows are dicts with column names as keys
+    """
+    column_info = []
+    # Column metadata is in ResultSet.ResultSetMetadata.ColumnInfo
+    result_set = response.get('ResultSet', {})
+    metadata = result_set.get('ResultSetMetadata', {})
+
+    if 'ColumnInfo' in metadata:
+        for col in metadata['ColumnInfo']:
+            # Handle nullable field - AWS returns 'UNKNOWN', 'NULLABLE', 'NOT_NULL' as strings
+            nullable_str = col.get('Nullable')
+            nullable = None
+            if nullable_str == 'NULLABLE':
+                nullable = True
+            elif nullable_str == 'NOT_NULL':
+                nullable = False
+            # For 'UNKNOWN' or any other value, leave as None
+
+            column_info.append(
+                ColumnInfo(
+                    name=col['Name'],
+                    type=col['Type'],
+                    nullable=nullable,
+                    precision=col.get('Precision'),
+                    scale=col.get('Scale'),
+                )
+            )
+
+    rows = []
+    if 'Rows' in response['ResultSet']:
+        # Get column names from metadata
+        column_names = [col.name for col in column_info]
+        for row in response['ResultSet']['Rows'][1:]:  # Skip header row
+            row_data = [col.get('VarCharValue', '') for col in row['Data']]
+            # Convert to dict format with column names as keys
+            if column_names:
+                row_dict = dict(zip(column_names, row_data))
+                rows.append(row_dict)
+            else:
+                # Fallback: use generic column names if metadata is missing
+                row_dict = {f'column_{i}': val for i, val in enumerate(row_data)}
+                rows.append(row_dict)
+
+    return column_info, rows
+
+
 def _handle_athena_error(error: Exception) -> ErrorResponse:
     """Handle and format Athena errors."""
     if isinstance(error, ClientError):
@@ -214,45 +269,7 @@ async def execute_query(
             QueryExecutionId=query_execution_id, MaxResults=1000
         )
 
-        column_info = []
-        # Column metadata is in ResultSet.ResultSetMetadata.ColumnInfo
-        result_set = results_response.get('ResultSet', {})
-        metadata = result_set.get('ResultSetMetadata', {})
-
-        if 'ColumnInfo' in metadata:
-            for col in metadata['ColumnInfo']:
-                # Handle nullable field - AWS returns 'UNKNOWN', 'NULLABLE', 'NOT_NULL' as strings
-                nullable_str = col.get('Nullable')
-                nullable = None
-                if nullable_str == 'NULLABLE':
-                    nullable = True
-                elif nullable_str == 'NOT_NULL':
-                    nullable = False
-                # For 'UNKNOWN' or any other value, leave as None
-
-                column_info.append(
-                    ColumnInfo(
-                        name=col['Name'],
-                        type=col['Type'],
-                        nullable=nullable,
-                        precision=col.get('Precision'),
-                        scale=col.get('Scale'),
-                    )
-                )
-        rows = []
-        if 'Rows' in results_response['ResultSet']:
-            # Get column names from metadata
-            column_names = [col.name for col in column_info]
-            for row in results_response['ResultSet']['Rows'][1:]:  # Skip header row
-                row_data = [col.get('VarCharValue', '') for col in row['Data']]
-                # Convert to dict format with column names as keys
-                if column_names:
-                    row_dict = dict(zip(column_names, row_data))
-                    rows.append(row_dict)
-                else:
-                    # Fallback: use generic column names if metadata is missing
-                    row_dict = {f'column_{i}': val for i, val in enumerate(row_data)}
-                    rows.append(row_dict)
+        column_info, rows = _extract_columns_and_rows(results_response)
         statistics = execution.get('Statistics', {})
         return QueryResults(
             column_info=column_info,
@@ -321,45 +338,7 @@ async def get_query_results(
         if next_token.strip():
             params['NextToken'] = next_token
         response = client.get_query_results(**params)
-        column_info = []
-        # Column metadata is in ResultSet.ResultSetMetadata.ColumnInfo
-        result_set = response.get('ResultSet', {})
-        metadata = result_set.get('ResultSetMetadata', {})
-
-        if 'ColumnInfo' in metadata:
-            for col in metadata['ColumnInfo']:
-                # Handle nullable field - AWS returns 'UNKNOWN', 'NULLABLE', 'NOT_NULL' as strings
-                nullable_str = col.get('Nullable')
-                nullable = None
-                if nullable_str == 'NULLABLE':
-                    nullable = True
-                elif nullable_str == 'NOT_NULL':
-                    nullable = False
-                # For 'UNKNOWN' or any other value, leave as None
-
-                column_info.append(
-                    ColumnInfo(
-                        name=col['Name'],
-                        type=col['Type'],
-                        nullable=nullable,
-                        precision=col.get('Precision'),
-                        scale=col.get('Scale'),
-                    )
-                )
-        rows = []
-        if 'Rows' in response['ResultSet']:
-            # Get column names from metadata
-            column_names = [col.name for col in column_info]
-            for row in response['ResultSet']['Rows'][1:]:  # Skip header row
-                row_data = [col.get('VarCharValue', '') for col in row['Data']]
-                # Convert to dict format with column names as keys
-                if column_names:
-                    row_dict = dict(zip(column_names, row_data))
-                    rows.append(row_dict)
-                else:
-                    # Fallback: use generic column names if metadata is missing
-                    row_dict = {f'column_{i}': val for i, val in enumerate(row_data)}
-                    rows.append(row_dict)
+        column_info, rows = _extract_columns_and_rows(response)
         return QueryResults(
             column_info=column_info,
             rows=rows,
