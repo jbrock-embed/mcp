@@ -60,7 +60,7 @@ class QueryResults(BaseModel):
     rows: list[dict[str, str]] = Field(
         description='Result rows as objects with column names as keys'
     )
-    total_rows: int = Field(description='Total number of rows returned')
+    total_rows: int = Field(ge=0, description='Total number of rows returned')
     query_execution_id: str = Field(description='Query execution ID for reference')
     next_token: str | None = Field(default=None, description='Token for pagination')
     data_scanned_in_bytes: int | None = Field(
