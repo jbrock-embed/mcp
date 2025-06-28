@@ -108,7 +108,6 @@ def _extract_columns_and_rows(
     # Column metadata is in ResultSet.ResultSetMetadata.ColumnInfo
     result_set = response.get('ResultSet', {})
     metadata = result_set.get('ResultSetMetadata', {})
-
     if 'ColumnInfo' in metadata:
         for col in metadata['ColumnInfo']:
             # Handle nullable field - AWS returns 'UNKNOWN', 'NULLABLE', 'NOT_NULL' as strings
@@ -119,7 +118,6 @@ def _extract_columns_and_rows(
             elif nullable_str == 'NOT_NULL':
                 nullable = False
             # For 'UNKNOWN' or any other value, leave as None
-
             column_info.append(
                 ColumnInfo(
                     name=col['Name'],
@@ -129,7 +127,6 @@ def _extract_columns_and_rows(
                     scale=col.get('Scale'),
                 )
             )
-
     rows = []
     if 'Rows' in response['ResultSet']:
         # Get column names from metadata
@@ -144,7 +141,6 @@ def _extract_columns_and_rows(
                 # Fallback: use generic column names if metadata is missing
                 row_dict = {f'column_{i}': val for i, val in enumerate(row_data)}
                 rows.append(row_dict)
-
     return column_info, rows
 
 
