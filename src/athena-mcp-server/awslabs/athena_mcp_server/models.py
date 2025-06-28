@@ -61,8 +61,8 @@ class QueryResults(BaseModel):
         description='Result rows as objects with column names as keys'
     )
     total_rows: int = Field(description='Total number of rows returned')
-    next_token: str | None = Field(default=None, description='Token for pagination')
     query_execution_id: str = Field(description='Query execution ID for reference')
+    next_token: str | None = Field(default=None, description='Token for pagination')
     data_scanned_in_bytes: int | None = Field(
         default=None, ge=0, description='Amount of data scanned by the query in bytes'
     )
@@ -123,11 +123,11 @@ class TableSummary(BaseModel):
     """Summary information for a table in list responses."""
 
     name: str = Field(min_length=1, max_length=255, description='Table name')
+    columns_count: int = Field(ge=0, description='Number of columns in the table')
+    partition_keys_count: int = Field(ge=0, description='Number of partition keys')
     table_type: TableType | None = Field(default=None, description='Table type')
     create_time: datetime | None = Field(default=None, description='Table creation time')
     last_access_time: datetime | None = Field(default=None, description='Last access time')
-    columns_count: int = Field(ge=0, description='Number of columns in the table')
-    partition_keys_count: int = Field(ge=0, description='Number of partition keys')
 
 
 class ListTablesResponse(PaginatedResponse):
