@@ -265,19 +265,18 @@ class TestGetQueryResults:
     async def test_get_query_results_with_pagination(
         self, mock_athena_client, sample_query_results
     ):
-        """Test query results with pagination parameters."""
+        """Test query results with pagination token."""
         mock_athena_client.get_query_results.return_value = sample_query_results
 
         result = await get_query_results(
             query_execution_id='test-execution-id-123',
             next_token='previous-token',
-            max_results=500,
         )
 
         mock_athena_client.get_query_results.assert_called_once_with(
             QueryExecutionId='test-execution-id-123',
             NextToken='previous-token',
-            MaxResults=500,
+            MaxResults=1000,
         )
         assert isinstance(result, QueryResults)
 

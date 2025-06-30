@@ -300,17 +300,9 @@ async def get_query_results(
     next_token: Annotated[
         str,
         Field(
-            description='Token for pagination. Use this to get additional result pages if the query returned more rows than max_results.'
+            description='Token for pagination. Use this to get additional result pages if more results are available.'
         ),
     ] = '',
-    max_results: Annotated[
-        int,
-        Field(
-            ge=1,
-            le=1000,
-            description='Maximum number of rows to return per page (1-1000).',
-        ),
-    ] = 1000,
     region: Annotated[
         str,
         Field(
@@ -326,7 +318,6 @@ async def get_query_results(
     Args:
         query_execution_id: Query execution ID from execute_query
         next_token: Token for pagination
-        max_results: Maximum number of rows to return
         region: AWS region to use for the query
 
     Returns:
@@ -343,7 +334,7 @@ async def get_query_results(
         client = _get_athena_client(region)
         params = {
             'QueryExecutionId': query_execution_id,
-            'MaxResults': max_results,
+            'MaxResults': 1000,
         }
         if next_token.strip():
             params['NextToken'] = next_token
@@ -375,14 +366,6 @@ async def list_databases(
     next_token: Annotated[
         str, Field(description='Token for pagination to get additional database pages.')
     ] = '',
-    max_results: Annotated[
-        int,
-        Field(
-            ge=1,
-            le=50,
-            description='Maximum number of databases to return (1-50). Use smaller values for faster responses.',
-        ),
-    ] = 50,
     region: Annotated[
         str,
         Field(
@@ -395,7 +378,6 @@ async def list_databases(
     Args:
         catalog_name: Data catalog name
         next_token: Token for pagination
-        max_results: Maximum number of databases to return
         region: AWS region to use for the query
 
     Returns:
@@ -407,7 +389,7 @@ async def list_databases(
         client = _get_athena_client(region)
         params = {
             'CatalogName': catalog_name,
-            'MaxResults': max_results,
+            'MaxResults': 50,
         }
         if next_token.strip():
             params['NextToken'] = next_token
@@ -453,14 +435,6 @@ async def list_tables(
     next_token: Annotated[
         str, Field(description='Token for pagination to get additional table pages.')
     ] = '',
-    max_results: Annotated[
-        int,
-        Field(
-            ge=1,
-            le=50,
-            description='Maximum number of tables to return (1-50).',
-        ),
-    ] = 50,
     region: Annotated[
         str,
         Field(
@@ -475,7 +449,6 @@ async def list_tables(
         catalog_name: Data catalog name
         expression: Regular expression to filter table names
         next_token: Token for pagination
-        max_results: Maximum number of tables to return
         region: AWS region to use for the query
 
     Returns:
@@ -488,7 +461,7 @@ async def list_tables(
         params = {
             'CatalogName': catalog_name,
             'DatabaseName': database_name,
-            'MaxResults': max_results,
+            'MaxResults': 50,
         }
         if expression.strip():
             params['Expression'] = expression
@@ -607,14 +580,6 @@ async def list_work_groups(
     next_token: Annotated[
         str, Field(description='Token for pagination to get additional workgroup pages.')
     ] = '',
-    max_results: Annotated[
-        int,
-        Field(
-            ge=1,
-            le=50,
-            description='Maximum number of workgroups to return (1-50).',
-        ),
-    ] = 50,
     region: Annotated[
         str,
         Field(
@@ -626,7 +591,6 @@ async def list_work_groups(
 
     Args:
         next_token: Token for pagination
-        max_results: Maximum number of workgroups to return
         region: AWS region to use for the query
 
     Returns:
@@ -636,7 +600,7 @@ async def list_work_groups(
     """
     try:
         client = _get_athena_client(region)
-        params: dict[str, Any] = {'MaxResults': max_results}
+        params: dict[str, Any] = {'MaxResults': 50}
         if next_token.strip():
             params['NextToken'] = next_token
         response = client.list_work_groups(**params)
@@ -725,14 +689,6 @@ async def list_data_catalogs(
         str,
         Field(description='Token for pagination to get additional data catalog pages.'),
     ] = '',
-    max_results: Annotated[
-        int,
-        Field(
-            ge=1,
-            le=50,
-            description='Maximum number of data catalogs to return (1-50).',
-        ),
-    ] = 50,
     region: Annotated[
         str,
         Field(
@@ -744,7 +700,6 @@ async def list_data_catalogs(
 
     Args:
         next_token: Token for pagination
-        max_results: Maximum number of data catalogs to return
         region: AWS region to use for the query
 
     Returns:
@@ -754,7 +709,7 @@ async def list_data_catalogs(
     """
     try:
         client = _get_athena_client(region)
-        params: dict[str, Any] = {'MaxResults': max_results}
+        params: dict[str, Any] = {'MaxResults': 50}
         if next_token.strip():
             params['NextToken'] = next_token
         response = client.list_data_catalogs(**params)
