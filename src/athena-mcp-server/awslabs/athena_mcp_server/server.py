@@ -222,7 +222,14 @@ async def execute_query(
         region: AWS region to use for the query
 
     Returns:
-        Query results with column information and data rows
+        Query results data containing:
+        - column_info: List of column metadata with name, type, nullable status, precision, scale
+        - rows: List of dictionaries where each dict represents a row with column names as keys
+        - total_rows: Number of data rows returned (excluding headers)
+        - query_execution_id: AWS Athena execution ID for reference or pagination
+        - next_token: Pagination token if more results are available (use with get_query_results)
+        - data_scanned_in_bytes: Amount of data scanned by the query (for cost analysis)
+        - execution_time_in_millis: Query execution time in milliseconds (performance metrics)
     """
     validate_query(query_string)
 
@@ -323,7 +330,14 @@ async def get_query_results(
         region: AWS region to use for the query
 
     Returns:
-        Query results with column information and data rows
+        Paginated query results containing:
+        - column_info: List of column metadata with name, type, nullable status, precision, scale
+        - rows: List of dictionaries where each dict represents a row with column names as keys
+        - total_rows: Number of data rows returned in this page
+        - query_execution_id: Same execution ID passed in (for reference)
+        - next_token: Token for next page if more results available, None if this is the last page
+        - data_scanned_in_bytes: Amount of data scanned by the original query
+        - execution_time_in_millis: Original query execution time in milliseconds
     """
     try:
         client = _get_athena_client(region)
@@ -385,7 +399,9 @@ async def list_databases(
         region: AWS region to use for the query
 
     Returns:
-        List of databases with metadata
+        Database listing containing:
+        - databases: List of database dictionaries with 'name', 'description', and 'parameters'
+        - next_token: Pagination token for retrieving additional databases, None if no more pages
     """
     try:
         client = _get_athena_client(region)
@@ -463,7 +479,9 @@ async def list_tables(
         region: AWS region to use for the query
 
     Returns:
-        List of tables with basic metadata
+        Table listing containing:
+        - tables: List of table summaries with name, table_type, create_time, last_access_time, columns_count, partition_keys_count
+        - next_token: Pagination token for retrieving additional tables, None if no more pages
     """
     try:
         client = _get_athena_client(region)
@@ -529,7 +547,16 @@ async def get_table_metadata(
         region: AWS region to use for the query
 
     Returns:
-        Detailed table metadata including schema
+        Detailed table metadata containing:
+        - name: Table name
+        - table_type: Type (EXTERNAL_TABLE, MANAGED_TABLE, VIRTUAL_VIEW)
+        - create_time, last_access_time: Timestamps for table lifecycle
+        - columns: List of column definitions with detailed schema information
+        - partition_keys: List of partition column definitions
+        - location: S3 path where table data is stored
+        - input_format, output_format: Hadoop input/output format classes
+        - serde_info: Serialization/deserialization configuration
+        - parameters: Additional table properties and metadata
     """
     try:
         client = _get_athena_client(region)
@@ -603,7 +630,9 @@ async def list_work_groups(
         region: AWS region to use for the query
 
     Returns:
-        List of workgroups with their configuration
+        Workgroup listing containing:
+        - workgroups: List of workgroup summaries with name, state, description, creation_time
+        - next_token: Pagination token for retrieving additional workgroups, None if no more pages
     """
     try:
         client = _get_athena_client(region)
@@ -653,7 +682,12 @@ async def get_work_group(
         region: AWS region to use for the query
 
     Returns:
-        Detailed workgroup configuration
+        Detailed workgroup information containing:
+        - name: Workgroup name
+        - state: Current state (ENABLED/DISABLED)
+        - description: Optional workgroup description
+        - creation_time: When the workgroup was created
+        - configuration: Complete workgroup settings including result location, encryption, cost controls
     """
     try:
         client = _get_athena_client(region)
@@ -714,7 +748,9 @@ async def list_data_catalogs(
         region: AWS region to use for the query
 
     Returns:
-        List of data catalogs with their configuration
+        Data catalog listing containing:
+        - data_catalogs: List of catalog summaries with catalog_name and type (GLUE, HIVE, LAMBDA)
+        - next_token: Pagination token for retrieving additional catalogs, None if no more pages
     """
     try:
         client = _get_athena_client(region)
