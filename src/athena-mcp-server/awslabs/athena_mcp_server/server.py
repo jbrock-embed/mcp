@@ -494,15 +494,24 @@ async def list_tables(
 async def get_table_metadata(
     database_name: Annotated[
         str,
-        Field(description='Database name containing the table. Must exist in the data catalog.'),
+        Field(
+            min_length=1,
+            description='Database name containing the table. Must exist in the data catalog.',
+        ),
     ],
     table_name: Annotated[
         str,
-        Field(description='Table name to get metadata for. Must exist in the specified database.'),
+        Field(
+            min_length=1,
+            description='Table name to get metadata for. Must exist in the specified database.',
+        ),
     ],
     catalog_name: Annotated[
         str,
-        Field(description='Data catalog name. Use "AwsDataCatalog" for AWS Glue Data Catalog.'),
+        Field(
+            min_length=1,
+            description='Data catalog name. Use "AwsDataCatalog" for AWS Glue Data Catalog.',
+        ),
     ] = 'AwsDataCatalog',
     region: Annotated[
         str,
