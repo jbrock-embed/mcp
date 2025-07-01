@@ -222,7 +222,7 @@ async def execute_query(
         Field(
             min_length=1,
             max_length=262144,
-            description='SQL query to execute. Allowed read-only statements like SELECT, VALUES, DESCRIBE, SHOW, and EXPLAIN.',
+            description='SQL query to execute. Only allows read-only SQL commands such as SELECT, VALUES, DESCRIBE, and SHOW. EXPLAIN is allowed if the query is read-only.',
         ),
     ],
     workgroup: Annotated[
@@ -261,7 +261,7 @@ async def execute_query(
 ) -> QueryResults:
     """Execute a read-only SQL query in Athena and return the results.
 
-    - Only allows read-only statements like SELECT, VALUES, DESCRIBE, SHOW, and EXPLAIN
+    - Only allows read-only SQL commands such as SELECT, VALUES, DESCRIBE, and SHOW. EXPLAIN is allowed if the query is read-only.
     - Non-read-only operations such as INSERT, UPDATE, DELETE, CREATE, DROP, and ALTER are not allowed
     - When appropriate, use LIMIT clauses, WHERE filters, and select specific columns
     - Leverage partitioning when appropriate
