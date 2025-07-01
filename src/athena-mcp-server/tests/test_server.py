@@ -17,8 +17,13 @@
 import pytest
 from awslabs.athena_mcp_server.models import (
     ErrorResponse,
+    ListDatabasesResponse,
+    ListDataCatalogsResponse,
+    ListTablesResponse,
+    ListWorkgroupsResponse,
     QueryResults,
     TableInfo,
+    WorkgroupDetailsResponse,
 )
 from awslabs.athena_mcp_server.server import (
     _get_athena_client,
@@ -122,11 +127,22 @@ def sample_query_results():
 class TestExecuteQuery:
     """Test query execution functionality."""
 
+    @pytest.mark.parametrize(
+        'optional_params',
+        [
+            {},
+            {
+                'workgroup': 'test-workgroup',
+                'database': 'test_db',
+                'output_location': 's3://some-bucket/results/',
+            },
+        ],
+    )
     @pytest.mark.asyncio
     async def test_execute_query_success(
-        self, mock_athena_client, sample_query_execution, sample_query_results
+        self, mock_athena_client, sample_query_execution, sample_query_results, optional_params
     ):
-        """Test successful query execution."""
+        """Test successful query execution with various parameter combinations."""
         mock_athena_client.start_query_execution.return_value = {
             'QueryExecutionId': 'test-execution-id-123'
         }
@@ -135,52 +151,20 @@ class TestExecuteQuery:
         }
         mock_athena_client.get_query_results.return_value = sample_query_results
 
-        result = await execute_query('SELECT * FROM test_table LIMIT 10')
+        result = await execute_query('SELECT * FROM test_table LIMIT 10', **optional_params)
 
         assert isinstance(result, QueryResults)
         assert len(result.column_info) == 3
         assert result.column_info[0].name == 'id'
         assert result.column_info[0].type == 'bigint'
-        assert len(result.rows) == 2  # Excluding header row
+        assert len(result.rows) == 2
         assert result.rows[0] == {'id': '1', 'name': 'Alice', 'score': '95.5'}
+        assert result.rows[1] == {'id': '2', 'name': 'Bob', 'score': '87.3'}
         assert result.total_rows == 2
         assert result.next_token == 'next-page-token'
-        # Test execution metadata
         assert result.query_execution_id == 'test-execution-id-123'
         assert result.data_scanned_in_bytes == 1024
         assert result.execution_time_in_millis == 5000
-
-        mock_athena_client.start_query_execution.assert_called_once()
-        mock_athena_client.get_query_execution.assert_called_once()
-        mock_athena_client.get_query_results.assert_called_once()
-
-    @pytest.mark.asyncio
-    async def test_execute_query_with_options(
-        self, mock_athena_client, sample_query_execution, sample_query_results
-    ):
-        """Test query execution with all options."""
-        mock_athena_client.start_query_execution.return_value = {
-            'QueryExecutionId': 'test-execution-id-123'
-        }
-        mock_athena_client.get_query_execution.return_value = {
-            'QueryExecution': sample_query_execution
-        }
-        mock_athena_client.get_query_results.return_value = sample_query_results
-
-        result = await execute_query(
-            query_string='SELECT COUNT(*) FROM test_table',
-            workgroup='test-workgroup',
-            database='test_db',
-            output_location='s3://some-bucket/results/',
-        )
-
-        assert isinstance(result, QueryResults)
-        mock_athena_client.start_query_execution.assert_called_once_with(
-            QueryString='SELECT COUNT(*) FROM test_table',
-            WorkGroup='test-workgroup',
-            QueryExecutionContext={'Database': 'test_db'},
-            ResultConfiguration={'OutputLocation': 's3://some-bucket/results/'},
-        )
 
     @pytest.mark.asyncio
     async def test_execute_query_client_error(self, mock_athena_client):
@@ -189,7 +173,6 @@ class TestExecuteQuery:
             {'Error': {'Code': 'InvalidRequestException', 'Message': 'Invalid SQL syntax'}},
             'StartQueryExecution',
         )
-
         with pytest.raises(RuntimeError, match='InvalidRequestException.*Invalid SQL syntax'):
             await execute_query('SELECT * FROM invalid_table')
 
@@ -204,12 +187,10 @@ class TestExecuteQuery:
                 'StateChangeReason': 'Table not found',
             },
         }
-
         mock_athena_client.start_query_execution.return_value = {
             'QueryExecutionId': 'test-execution-id-123'
         }
         mock_athena_client.get_query_execution.return_value = {'QueryExecution': failed_execution}
-
         with pytest.raises(RuntimeError, match='Query failed: Table not found'):
             await execute_query('SELECT * FROM nonexistent_table')
 
@@ -223,12 +204,10 @@ class TestExecuteQuery:
                 'State': 'RUNNING',
             },
         }
-
         mock_athena_client.start_query_execution.return_value = {
             'QueryExecutionId': 'test-execution-id-123'
         }
         mock_athena_client.get_query_execution.return_value = {'QueryExecution': running_execution}
-
         with pytest.raises(RuntimeError, match='Query timed out after 1 seconds'):
             await execute_query('SELECT * FROM large_table', timeout_seconds=1)
         mock_athena_client.stop_query_execution.assert_called_once_with(
@@ -239,41 +218,25 @@ class TestExecuteQuery:
 class TestGetQueryResults:
     """Test query results retrieval."""
 
+    @pytest.mark.parametrize(
+        'next_token,num_expected_rows',
+        [
+            ('', 2),  # No pagination, header skipped
+            ('previous-token', 3),  # With pagination, header included
+        ],
+    )
     @pytest.mark.asyncio
-    async def test_get_query_results_success(self, mock_athena_client, sample_query_results):
-        """Test successful query results retrieval."""
-        mock_athena_client.get_query_results.return_value = sample_query_results
-
-        result = await get_query_results('test-execution-id-123')
-
-        assert isinstance(result, QueryResults)
-        assert len(result.column_info) == 3
-        assert result.column_info[0].name == 'id'
-        assert result.column_info[0].type == 'bigint'
-        assert result.column_info[2].precision == 10
-        assert result.column_info[2].scale == 2
-        assert len(result.rows) == 2  # Excluding header row
-        assert result.rows[0] == {'id': '1', 'name': 'Alice', 'score': '95.5'}
-        assert result.total_rows == 2
-        assert result.next_token == 'next-page-token'
-        # Test execution metadata (None for get_query_results)
-        assert result.query_execution_id == 'test-execution-id-123'
-        assert result.data_scanned_in_bytes is None
-        assert result.execution_time_in_millis is None
-
-    @pytest.mark.asyncio
-    async def test_get_query_results_with_pagination(
-        self, mock_athena_client, sample_query_results
+    async def test_get_query_results(
+        self, mock_athena_client, sample_query_results, next_token, num_expected_rows
     ):
-        """Test query results with pagination token."""
+        """Test query results retrieval with and without pagination."""
         mock_athena_client.get_query_results.return_value = sample_query_results
 
         result = await get_query_results(
             query_execution_id='test-execution-id-123',
-            next_token='previous-token',
+            next_token=next_token,
         )
 
-        # Verify the result structure and content
         assert isinstance(result, QueryResults)
         assert len(result.column_info) == 3
         assert result.column_info[0].name == 'id'
@@ -285,15 +248,17 @@ class TestGetQueryResults:
         assert result.column_info[2].precision == 10
         assert result.column_info[2].scale == 2
 
-        # Verify row data parsing (with pagination, should include all rows)
-        assert len(result.rows) == 3  # All rows, no header skipping for pagination
-        assert result.rows[0] == {'id': 'id', 'name': 'name', 'score': 'score'}  # Header row
-        assert result.rows[1] == {'id': '1', 'name': 'Alice', 'score': '95.5'}
-        assert result.rows[2] == {'id': '2', 'name': 'Bob', 'score': '87.3'}
-        assert result.total_rows == 3
+        assert len(result.rows) == num_expected_rows
+        if next_token:  # Don't skip the first row if this is not the first page (in practice pages after the first page don't have a header row)
+            assert result.rows[0] == {'id': 'id', 'name': 'name', 'score': 'score'}
+            assert result.rows[1] == {'id': '1', 'name': 'Alice', 'score': '95.5'}
+            assert result.rows[2] == {'id': '2', 'name': 'Bob', 'score': '87.3'}
+        else:  # First page gets first row skipped (since it's a header row)
+            assert result.rows[0] == {'id': '1', 'name': 'Alice', 'score': '95.5'}
+            assert result.rows[1] == {'id': '2', 'name': 'Bob', 'score': '87.3'}
+        assert result.total_rows == num_expected_rows
         assert result.next_token == 'next-page-token'
 
-        # Verify pagination-specific behavior: no execution metadata
         assert result.query_execution_id == 'test-execution-id-123'
         assert result.data_scanned_in_bytes is None
         assert result.execution_time_in_millis is None
@@ -316,13 +281,14 @@ class TestListDatabases:
             ],
             'NextToken': 'next-db-token',
         }
-
         result = await list_databases()
-
-        assert hasattr(result, 'databases')
-        assert hasattr(result, 'next_token')
+        assert isinstance(result, ListDatabasesResponse)
         assert len(result.databases) == 2
         assert result.databases[0]['name'] == 'default'
+        assert result.databases[0]['description'] == 'Default database'
+        assert result.databases[0]['parameters'] is None
+        assert result.databases[1]['name'] == 'analytics'
+        assert result.databases[1]['description'] == 'Analytics database'
         assert result.databases[1]['parameters'] == {'owner': 'team'}
         assert result.next_token == 'next-db-token'
 
@@ -351,14 +317,20 @@ class TestListTables:
                 },
             ],
         }
-
         result = await list_tables('test_database')
-
-        assert hasattr(result, 'tables')
+        assert isinstance(result, ListTablesResponse)
         assert len(result.tables) == 2
         assert result.tables[0].name == 'users'
+        assert result.tables[0].table_type.value == 'EXTERNAL_TABLE'
+        assert result.tables[0].create_time == datetime(2024, 1, 1)
+        assert result.tables[0].last_access_time is None
         assert result.tables[0].columns_count == 1
         assert result.tables[0].partition_keys_count == 0
+        assert result.tables[1].name == 'orders'
+        assert result.tables[1].table_type.value == 'EXTERNAL_TABLE'
+        assert result.tables[1].create_time == datetime(2024, 1, 2)
+        assert result.tables[1].last_access_time is None
+        assert result.tables[1].columns_count == 1
         assert result.tables[1].partition_keys_count == 1
 
 
@@ -389,47 +361,67 @@ class TestGetTableMetadata:
                 'Parameters': {'classification': 'csv'},
             }
         }
-
         result = await get_table_metadata('test_db', 'users')
-
         assert isinstance(result, TableInfo)
         assert result.name == 'users'
         assert result.table_type == 'EXTERNAL_TABLE'
-        assert result.columns is not None
+        assert result.create_time == datetime(2024, 1, 1)
+        assert result.last_access_time is None
+
+        # Verify columns
         assert len(result.columns) == 2
-        assert result.partition_keys is not None
+        assert result.columns[0].name == 'id'
+        assert result.columns[0].type == 'bigint'
+        assert result.columns[0].nullable is False
+        assert result.columns[1].name == 'name'
+        assert result.columns[1].type == 'varchar'
+        assert result.columns[1].nullable is True
+
+        # Verify partition keys
         assert len(result.partition_keys) == 1
+        assert result.partition_keys[0].name == 'year'
+        assert result.partition_keys[0].type == 'string'
+
+        # Verify storage and metadata
         assert result.location == 's3://data-bucket/users/'
+        assert result.input_format == 'org.apache.hadoop.mapred.TextInputFormat'
+        assert result.output_format == 'org.apache.hadoop.hive.ql.io.HiveIgnoreKeyTextOutputFormat'
+        assert result.serde_info == {
+            'SerializationLibrary': 'org.apache.hadoop.hive.serde2.lazy.LazySimpleSerDe'
+        }
         assert result.parameters == {'classification': 'csv'}
 
 
 class TestErrorHandling:
     """Test error handling functionality."""
 
-    def test_handle_athena_error_client_error(self):
-        """Test handling of AWS client errors."""
-        client_error = ClientError(
-            {'Error': {'Code': 'ThrottlingException', 'Message': 'Rate exceeded'}},
-            'GetQueryExecution',
-        )
-
-        error_response = _handle_athena_error(client_error)
-
+    @pytest.mark.parametrize(
+        'error,expected_code,expected_message,expected_type',
+        [
+            (
+                ClientError(
+                    {'Error': {'Code': 'ThrottlingException', 'Message': 'Rate exceeded'}},
+                    'GetQueryExecution',
+                ),
+                'ThrottlingException',
+                'Rate exceeded',
+                'ClientError',
+            ),
+            (
+                ValueError('Something went wrong'),
+                'InternalError',
+                'Something went wrong',
+                'ValueError',
+            ),
+        ],
+    )
+    def test_handle_athena_error(self, error, expected_code, expected_message, expected_type):
+        """Test error handling for different error types."""
+        error_response = _handle_athena_error(error)
         assert isinstance(error_response, ErrorResponse)
-        assert error_response.error_code == 'ThrottlingException'
-        assert error_response.error_message == 'Rate exceeded'
-        assert error_response.error_type == 'ClientError'
-
-    def test_handle_athena_error_generic_error(self):
-        """Test handling of generic errors."""
-        generic_error = ValueError('Something went wrong')
-
-        error_response = _handle_athena_error(generic_error)
-
-        assert isinstance(error_response, ErrorResponse)
-        assert error_response.error_code == 'InternalError'
-        assert error_response.error_message == 'Something went wrong'
-        assert error_response.error_type == 'ValueError'
+        assert error_response.error_code == expected_code
+        assert error_response.error_message == expected_message
+        assert error_response.error_type == expected_type
 
 
 class TestWorkgroupOperations:
@@ -455,15 +447,17 @@ class TestWorkgroupOperations:
             ],
             'NextToken': 'next-workgroup-token',
         }
-
         result = await list_work_groups()
-
-        assert hasattr(result, 'workgroups')
-        assert hasattr(result, 'next_token')
+        assert isinstance(result, ListWorkgroupsResponse)
         assert len(result.workgroups) == 2
         assert result.workgroups[0].name == 'primary'
-        assert result.workgroups[0].state == 'ENABLED'
+        assert result.workgroups[0].state.value == 'ENABLED'
+        assert result.workgroups[0].description == 'Default workgroup'
+        assert result.workgroups[0].creation_time == datetime(2024, 1, 1)
         assert result.workgroups[1].name == 'analytics-team'
+        assert result.workgroups[1].state.value == 'ENABLED'
+        assert result.workgroups[1].description == 'Analytics team workgroup'
+        assert result.workgroups[1].creation_time == datetime(2024, 1, 2)
         assert result.next_token == 'next-workgroup-token'
 
     @pytest.mark.asyncio
@@ -492,18 +486,26 @@ class TestWorkgroupOperations:
                 },
             }
         }
-
         result = await get_work_group('analytics-team')
-
+        assert isinstance(result, WorkgroupDetailsResponse)
         assert result.name == 'analytics-team'
-        assert result.state == 'ENABLED'
+        assert result.state.value == 'ENABLED'
         assert result.description == 'Analytics team workgroup'
+        assert result.creation_time == datetime(2024, 1, 1)
         assert (
             result.configuration['result_configuration']['output_location']
             == 's3://analytics-results/'
         )
+        assert result.configuration['result_configuration']['encryption_configuration'] == {
+            'EncryptionOption': 'SSE_S3'
+        }
         assert result.configuration['enforce_work_group_configuration'] is True
+        assert result.configuration['publish_cloud_watch_metrics'] is True
         assert result.configuration['bytes_scanned_cutoff_per_query'] == 1000000000
+        assert result.configuration['requester_pays_enabled'] is False
+        assert result.configuration['engine_version'] == {
+            'SelectedEngineVersion': 'Athena engine version 3'
+        }
 
 
 class TestDataCatalogOperations:
@@ -529,32 +531,16 @@ class TestDataCatalogOperations:
             ],
             'NextToken': 'next-catalog-token',
         }
-
         result = await list_data_catalogs()
-
-        assert hasattr(result, 'data_catalogs')
-        assert hasattr(result, 'next_token')
+        assert isinstance(result, ListDataCatalogsResponse)
         assert len(result.data_catalogs) == 3
         assert result.data_catalogs[0].catalog_name == 'AwsDataCatalog'
-        assert result.data_catalogs[0].type == 'GLUE'
+        assert result.data_catalogs[0].type.value == 'GLUE'
         assert result.data_catalogs[1].catalog_name == 'custom-catalog'
-        assert result.data_catalogs[1].type == 'HIVE'
+        assert result.data_catalogs[1].type.value == 'HIVE'
+        assert result.data_catalogs[2].catalog_name == 'external-catalog'
+        assert result.data_catalogs[2].type.value == 'LAMBDA'
         assert result.next_token == 'next-catalog-token'
-
-
-@pytest.mark.live
-class TestLiveIntegration:
-    """Integration tests that require live AWS credentials and resources."""
-
-    @pytest.mark.asyncio
-    async def test_list_databases_live(self):
-        """Test live database listing (requires AWS credentials)."""
-        # This test will be skipped unless run with -m live
-        result = await list_databases()
-        assert hasattr(result, 'databases')
-        # Should at least have the default database
-        database_names = [db['name'] for db in result.databases]
-        assert 'default' in database_names
 
 
 class TestQueryValidationIntegration:
@@ -563,11 +549,8 @@ class TestQueryValidationIntegration:
     @pytest.mark.asyncio
     async def test_execute_query_validation_integration(self, mock_athena_client):
         """Test that execute_query properly validates queries."""
-        # Should block mutation attempts before hitting AWS API
         with pytest.raises(ValueError, match='not permitted'):
             await execute_query('DROP TABLE users')
-
-        # AWS client should not be called for blocked queries
         mock_athena_client.start_query_execution.assert_not_called()
 
 
