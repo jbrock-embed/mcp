@@ -551,3 +551,120 @@ class TestQueryValidationIntegration:
 
         # AWS client should not be called for blocked queries
         mock_athena_client.start_query_execution.assert_not_called()
+
+
+class TestQueryResultFormatting:
+    """Test query result formatting for different query types."""
+
+    @pytest.mark.parametrize(
+        'query,aws_columns,aws_rows,expected_result',
+        [
+            (
+                'SELECT id, name FROM users LIMIT 2',
+                [
+                    {'Name': 'id', 'Type': 'bigint', 'Nullable': 'UNKNOWN'},
+                    {'Name': 'name', 'Type': 'varchar', 'Nullable': 'UNKNOWN'},
+                ],
+                [
+                    {'Data': [{'VarCharValue': 'id'}, {'VarCharValue': 'name'}]},  # header
+                    {'Data': [{'VarCharValue': '1'}, {'VarCharValue': 'Alice'}]},
+                    {'Data': [{'VarCharValue': '2'}, {'VarCharValue': 'Bob'}]},
+                ],
+                {
+                    'column_count': 2,
+                    'column_names': ['id', 'name'],
+                    'row_count': 2,
+                    'rows': [
+                        {'id': '1', 'name': 'Alice'},
+                        {'id': '2', 'name': 'Bob'},
+                    ],
+                },
+            ),
+            # SHOW TABLES result should format as single text cell
+            (
+                'SHOW TABLES IN database1',
+                [{'Name': 'tab_name', 'Type': 'string', 'Nullable': 'UNKNOWN'}],
+                [
+                    {'Data': [{'VarCharValue': 'table1'}]},  # data (no header)
+                    {'Data': [{'VarCharValue': 'table2'}]},
+                    {'Data': [{'VarCharValue': 'table3'}]},
+                ],
+                {
+                    'column_count': 1,
+                    'column_names': ['tab_name'],
+                    'row_count': 1,
+                    'rows': [
+                        {'tab_name': 'table1\ntable2\ntable3'},
+                    ],
+                },
+            ),
+            # DESCRIBE result should format as single text cell
+            (
+                'DESCRIBE users',
+                [
+                    {'Name': 'col_name', 'Type': 'string', 'Nullable': 'UNKNOWN'},
+                    {'Name': 'data_type', 'Type': 'string', 'Nullable': 'UNKNOWN'},
+                    {'Name': 'comment', 'Type': 'string', 'Nullable': 'UNKNOWN'},
+                ],
+                [
+                    {'Data': [{'VarCharValue': 'id\tbigint\tfrom deserializer'}]},
+                    {'Data': [{'VarCharValue': 'name\tstring\tfrom deserializer'}]},
+                    {'Data': [{'VarCharValue': 'created_at\ttimestamp\tfrom deserializer'}]},
+                ],
+                {
+                    'column_count': 1,
+                    'column_names': ['col_name'],
+                    'row_count': 1,
+                    'rows': [
+                        {
+                            'col_name': 'id\tbigint\tfrom deserializer\nname\tstring\tfrom deserializer\ncreated_at\ttimestamp\tfrom deserializer'
+                        }
+                    ],
+                },
+            ),
+            # EXPLAIN result should format as single text cell
+            (
+                'EXPLAIN SELECT COUNT(*) FROM users',
+                [{'Name': 'Query Plan', 'Type': 'varchar', 'Nullable': 'UNKNOWN'}],
+                [
+                    {'Data': [{'VarCharValue': 'Query Plan'}]},
+                    {'Data': [{'VarCharValue': 'Fragment 0 [SINGLE]'}]},
+                    {'Data': [{'VarCharValue': '    Output layout: [count]'}]},
+                ],
+                {
+                    'column_count': 1,
+                    'column_names': ['Query Plan'],
+                    'row_count': 1,
+                    'rows': [
+                        {
+                            'Query Plan': 'Query Plan\nFragment 0 [SINGLE]\n    Output layout: [count]'
+                        }
+                    ],
+                },
+            ),
+        ],
+    )
+    @pytest.mark.asyncio
+    async def test_query_result_formatting(
+        self, mock_athena_client, query, aws_columns, aws_rows, expected_result
+    ):
+        """Test query result formatting for different query types."""
+        execution = {
+            'QueryExecutionId': 'test-id',
+            'Status': {'State': 'SUCCEEDED'},
+            'Statistics': {'DataScannedInBytes': 100, 'EngineExecutionTimeInMillis': 500},
+        }
+        results = {
+            'ResultSet': {
+                'ResultSetMetadata': {'ColumnInfo': aws_columns},
+                'Rows': aws_rows,
+            },
+        }
+        mock_athena_client.start_query_execution.return_value = {'QueryExecutionId': 'test-id'}
+        mock_athena_client.get_query_execution.return_value = {'QueryExecution': execution}
+        mock_athena_client.get_query_results.return_value = results
+        result = await execute_query(query)
+        assert len(result.column_info) == expected_result['column_count']
+        assert [col.name for col in result.column_info] == expected_result['column_names']
+        assert len(result.rows) == expected_result['row_count']
+        assert result.rows == expected_result['rows']

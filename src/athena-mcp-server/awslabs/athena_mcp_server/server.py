@@ -45,6 +45,7 @@ from botocore.exceptions import ClientError
 from loguru import logger
 from mcp.server.fastmcp import FastMCP
 from pydantic import Field
+from sqlglot import exp, parse
 from typing import Annotated, Any
 
 
@@ -94,18 +95,67 @@ def _get_athena_client(region: str = ''):
 
 
 def _extract_columns_and_rows(
-    response: dict[str, Any],
+    response: dict[str, Any], query_string: str, has_header_row: bool = True
 ) -> tuple[list[ColumnInfo], list[dict[str, str]]]:
     """Parse AWS Athena query results response into column info and rows.
 
     Args:
         response: Raw AWS Athena get_query_results response
+        query_string: SQL query
+        has_header_row: Whether first row contains column headers (True for first page, False for subsequent pages)
 
     Returns:
         Tuple of (column_info, rows) where rows are dicts with column names as keys
     """
+    # Skip query parsing if query_string is empty (pagination calls)
+    if query_string.strip():
+        # Parse query to determine formatting approach
+        [statement] = parse(query_string, read='athena')
+        # DESCRIBE, EXPLAIN, and SHOW output human-readable strings that aren't necessarily columnar, so
+        # just shove the text from all the rows into a single cell
+        if isinstance(statement, exp.Describe) or (
+            isinstance(statement, exp.Command)
+            and statement.name.upper().startswith(('EXPLAIN', 'SHOW'))
+        ):
+            return _extract_as_text_cell(response)
+
+    # Default to tabular data extraction (SELECT, VALUES, WITH, and pagination calls)
+    return _extract_as_tabular_data(response, has_header_row)
+
+
+def _extract_as_text_cell(
+    response: dict[str, Any],
+) -> tuple[list[ColumnInfo], list[dict[str, str]]]:
+    """Extract query results as a single column and single row with formatted text.
+
+    Useful for utility commands like DESCRIBE, EXPLAIN, and SHOW that return human-readable
+    report-like text rather than tabular data.
+    """
+    result_set = response.get('ResultSet', {})
+    metadata = result_set.get('ResultSetMetadata', {})
+    rows = result_set.get('Rows', [])
+    # Get column name from metadata (use first column)
+    column_name = 'Result'  # Default fallback
+    if metadata.get('ColumnInfo'):
+        first_col = metadata['ColumnInfo'][0]
+        column_name = first_col['Name']
+    text_lines = []
+    for row in rows:
+        line = row['Data'][0].get('VarCharValue', '') if row.get('Data') else ''
+        text_lines.append(line)
+    formatted_text = '\n'.join(text_lines)
+
+    # Return as single column, single row
+    column_info = [ColumnInfo(name=column_name, type='varchar', nullable=True)]
+    result_rows = [{column_name: formatted_text}]
+    return column_info, result_rows
+
+
+def _extract_as_tabular_data(
+    response: dict[str, Any], has_header_row: bool = True
+) -> tuple[list[ColumnInfo], list[dict[str, str]]]:
+    """Extract tabular data with header detection."""
     column_info = []
-    # Column metadata is in ResultSet.ResultSetMetadata.ColumnInfo
     result_set = response.get('ResultSet', {})
     metadata = result_set.get('ResultSetMetadata', {})
     if 'ColumnInfo' in metadata:
@@ -128,19 +178,21 @@ def _extract_columns_and_rows(
                 )
             )
     rows = []
-    if 'Rows' in response['ResultSet']:
-        # Get column names from metadata
-        column_names = [col.name for col in column_info]
-        for row in response['ResultSet']['Rows'][1:]:  # Skip header row
-            row_data = [col.get('VarCharValue', '') for col in row['Data']]
-            # Convert to dict format with column names as keys
-            if column_names:
-                row_dict = dict(zip(column_names, row_data))
-                rows.append(row_dict)
-            else:
-                # Fallback: use generic column names if metadata is missing
-                row_dict = {f'column_{i}': val for i, val in enumerate(row_data)}
-                rows.append(row_dict)
+    all_rows = result_set.get('Rows', [])
+    if not all_rows:
+        return column_info, rows
+    column_names = [col.name for col in column_info]
+
+    # Skip first row if it contains headers (first page), process all rows otherwise (subsequent pages)
+    for row in all_rows[1:] if has_header_row else all_rows:
+        row_data = [col.get('VarCharValue', '') for col in row['Data']]
+        if column_names:
+            row_dict = dict(zip(column_names, row_data))
+            rows.append(row_dict)
+        else:
+            row_dict = {f'column_{i}': val for i, val in enumerate(row_data)}
+            rows.append(row_dict)
+
     return column_info, rows
 
 
@@ -272,7 +324,9 @@ async def execute_query(
             QueryExecutionId=query_execution_id, MaxResults=1000
         )
 
-        column_info, rows = _extract_columns_and_rows(results_response)
+        column_info, rows = _extract_columns_and_rows(
+            results_response, query_string, has_header_row=True
+        )
         statistics = execution.get('Statistics', {})
         return QueryResults(
             column_info=column_info,
@@ -339,7 +393,9 @@ async def get_query_results(
         if next_token.strip():
             params['NextToken'] = next_token
         response = client.get_query_results(**params)
-        column_info, rows = _extract_columns_and_rows(response)
+        column_info, rows = _extract_columns_and_rows(
+            response, '', has_header_row=not next_token.strip()
+        )
         return QueryResults(
             column_info=column_info,
             rows=rows,
