@@ -155,6 +155,47 @@ class TestExecuteQuery:
         mock_athena_client.get_query_results.assert_called_once()
 
     @pytest.mark.asyncio
+    async def test_get_query_results_success(self, mock_athena_client, sample_query_results):
+        """Test successful query results retrieval."""
+        mock_athena_client.get_query_results.return_value = sample_query_results
+
+        result = await get_query_results('test-execution-id-123')
+
+        assert isinstance(result, QueryResults)
+        assert len(result.column_info) == 3
+        assert result.column_info[0].name == 'id'
+        assert result.column_info[0].type == 'bigint'
+        assert result.column_info[2].precision == 10
+        assert result.column_info[2].scale == 2
+        assert len(result.rows) == 2  # Excluding header row
+        assert result.rows[0] == {'id': '1', 'name': 'Alice', 'score': '95.5'}
+        assert result.total_rows == 2
+        assert result.next_token == 'next-page-token'
+        # Test execution metadata (None for get_query_results)
+        assert result.query_execution_id == 'test-execution-id-123'
+        assert result.data_scanned_in_bytes is None
+        assert result.execution_time_in_millis is None
+
+    @pytest.mark.asyncio
+    async def test_get_query_results_with_pagination(
+        self, mock_athena_client, sample_query_results
+    ):
+        """Test query results with pagination token."""
+        mock_athena_client.get_query_results.return_value = sample_query_results
+
+        result = await get_query_results(
+            query_execution_id='test-execution-id-123',
+            next_token='previous-token',
+        )
+
+        mock_athena_client.get_query_results.assert_called_once_with(
+            QueryExecutionId='test-execution-id-123',
+            NextToken='previous-token',
+            MaxResults=1000,
+        )
+        assert isinstance(result, QueryResults)
+
+    @pytest.mark.asyncio
     async def test_execute_query_with_options(
         self, mock_athena_client, sample_query_execution, sample_query_results
     ):
@@ -171,7 +212,7 @@ class TestExecuteQuery:
             query_string='SELECT COUNT(*) FROM test_table',
             workgroup='test-workgroup',
             database='test_db',
-            output_location='s3://my-bucket/results/',
+            output_location='s3://some-bucket/results/',
         )
 
         assert isinstance(result, QueryResults)
@@ -179,7 +220,7 @@ class TestExecuteQuery:
             QueryString='SELECT COUNT(*) FROM test_table',
             WorkGroup='test-workgroup',
             QueryExecutionContext={'Database': 'test_db'},
-            ResultConfiguration={'OutputLocation': 's3://my-bucket/results/'},
+            ResultConfiguration={'OutputLocation': 's3://some-bucket/results/'},
         )
 
     @pytest.mark.asyncio
@@ -234,51 +275,6 @@ class TestExecuteQuery:
         mock_athena_client.stop_query_execution.assert_called_once_with(
             QueryExecutionId='test-execution-id-123'
         )
-
-
-class TestGetQueryResults:
-    """Test query results retrieval."""
-
-    @pytest.mark.asyncio
-    async def test_get_query_results_success(self, mock_athena_client, sample_query_results):
-        """Test successful query results retrieval."""
-        mock_athena_client.get_query_results.return_value = sample_query_results
-
-        result = await get_query_results('test-execution-id-123')
-
-        assert isinstance(result, QueryResults)
-        assert len(result.column_info) == 3
-        assert result.column_info[0].name == 'id'
-        assert result.column_info[0].type == 'bigint'
-        assert result.column_info[2].precision == 10
-        assert result.column_info[2].scale == 2
-        assert len(result.rows) == 2  # Excluding header row
-        assert result.rows[0] == {'id': '1', 'name': 'Alice', 'score': '95.5'}
-        assert result.total_rows == 2
-        assert result.next_token == 'next-page-token'
-        # Test execution metadata (None for get_query_results)
-        assert result.query_execution_id == 'test-execution-id-123'
-        assert result.data_scanned_in_bytes is None
-        assert result.execution_time_in_millis is None
-
-    @pytest.mark.asyncio
-    async def test_get_query_results_with_pagination(
-        self, mock_athena_client, sample_query_results
-    ):
-        """Test query results with pagination token."""
-        mock_athena_client.get_query_results.return_value = sample_query_results
-
-        result = await get_query_results(
-            query_execution_id='test-execution-id-123',
-            next_token='previous-token',
-        )
-
-        mock_athena_client.get_query_results.assert_called_once_with(
-            QueryExecutionId='test-execution-id-123',
-            NextToken='previous-token',
-            MaxResults=1000,
-        )
-        assert isinstance(result, QueryResults)
 
 
 class TestListDatabases:
