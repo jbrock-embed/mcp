@@ -114,7 +114,7 @@ def sample_query_results():
                 {
                     'Data': [
                         {'VarCharValue': '2'},
-                        {'VarCharValue': 'Bob'},
+                        {},  # NULL value
                         {'VarCharValue': '87.3'},
                     ]
                 },
@@ -159,7 +159,7 @@ class TestExecuteQuery:
         assert result.column_info[0].type == 'bigint'
         assert len(result.rows) == 2
         assert result.rows[0] == {'id': '1', 'name': 'Alice', 'score': '95.5'}
-        assert result.rows[1] == {'id': '2', 'name': 'Bob', 'score': '87.3'}
+        assert result.rows[1] == {'id': '2', 'name': None, 'score': '87.3'}
         assert result.total_rows == 2
         assert result.next_token == 'next-page-token'
         assert result.query_execution_id == 'test-execution-id-123'
@@ -252,10 +252,10 @@ class TestGetQueryResults:
         if next_token:  # Don't skip the first row if this is not the first page (in practice pages after the first page don't have a header row)
             assert result.rows[0] == {'id': 'id', 'name': 'name', 'score': 'score'}
             assert result.rows[1] == {'id': '1', 'name': 'Alice', 'score': '95.5'}
-            assert result.rows[2] == {'id': '2', 'name': 'Bob', 'score': '87.3'}
+            assert result.rows[2] == {'id': '2', 'name': None, 'score': '87.3'}
         else:  # First page gets first row skipped (since it's a header row)
             assert result.rows[0] == {'id': '1', 'name': 'Alice', 'score': '95.5'}
-            assert result.rows[1] == {'id': '2', 'name': 'Bob', 'score': '87.3'}
+            assert result.rows[1] == {'id': '2', 'name': None, 'score': '87.3'}
         assert result.total_rows == num_expected_rows
         assert result.next_token == 'next-page-token'
 
@@ -569,7 +569,7 @@ class TestQueryResultFormatting:
                 [
                     {'Data': [{'VarCharValue': 'id'}, {'VarCharValue': 'name'}]},  # header
                     {'Data': [{'VarCharValue': '1'}, {'VarCharValue': 'Alice'}]},
-                    {'Data': [{'VarCharValue': '2'}, {'VarCharValue': 'Bob'}]},
+                    {'Data': [{'VarCharValue': '2'}, {}]},  # NULL value
                 ],
                 {
                     'column_count': 2,
@@ -577,7 +577,7 @@ class TestQueryResultFormatting:
                     'row_count': 2,
                     'rows': [
                         {'id': '1', 'name': 'Alice'},
-                        {'id': '2', 'name': 'Bob'},
+                        {'id': '2', 'name': None},
                     ],
                 },
             ),
