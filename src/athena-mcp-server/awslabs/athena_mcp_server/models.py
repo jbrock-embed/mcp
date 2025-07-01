@@ -57,7 +57,7 @@ class QueryResults(BaseModel):
     """Query execution results with execution metadata."""
 
     column_info: list[ColumnInfo] = Field(description='Column metadata')
-    rows: list[dict[str, str]] = Field(
+    rows: list[dict[str, str | None]] = Field(
         description='Result rows as objects with column names as keys'
     )
     total_rows: int = Field(ge=0, description='Total number of rows returned')

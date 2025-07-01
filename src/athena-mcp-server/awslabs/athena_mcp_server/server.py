@@ -65,6 +65,7 @@ Supports complex analytical queries, joins, aggregations, and window functions.
 2. Explore tables within databases using `list_tables`
 3. Get detailed table metadata including columns and partitions with `get_table_metadata`
 4. Use DESCRIBE or SHOW statements via `execute_query` to explore data structure
+5. Use EXPLAIN to understand query execution
 
 ### Query Execution
 1. Execute queries with `execute_query`
@@ -96,7 +97,7 @@ def _get_athena_client(region: str = ''):
 
 def _extract_columns_and_rows(
     response: dict[str, Any], query_string: str, has_header_row: bool = True
-) -> tuple[list[ColumnInfo], list[dict[str, str]]]:
+) -> tuple[list[ColumnInfo], list[dict[str, str | None]]]:
     """Parse AWS Athena query results response into column info and rows.
 
     Args:
@@ -107,7 +108,7 @@ def _extract_columns_and_rows(
     Returns:
         Tuple of (column_info, rows) where rows are dicts with column names as keys
     """
-    # Skip query parsing if query_string is empty (pagination calls)
+    # Skip query parsing if query_string is empty (e.g., pagination calls)
     if query_string.strip():
         # Parse query to determine formatting approach
         [statement] = parse(query_string, read='athena')
@@ -118,14 +119,12 @@ def _extract_columns_and_rows(
             and statement.name.upper().startswith(('EXPLAIN', 'SHOW'))
         ):
             return _extract_as_text_cell(response)
-
-    # Default to tabular data extraction (SELECT, VALUES, WITH, and pagination calls)
     return _extract_as_tabular_data(response, has_header_row)
 
 
 def _extract_as_text_cell(
     response: dict[str, Any],
-) -> tuple[list[ColumnInfo], list[dict[str, str]]]:
+) -> tuple[list[ColumnInfo], list[dict[str, str | None]]]:
     """Extract query results as a single column and single row with formatted text.
 
     Useful for utility commands like DESCRIBE, EXPLAIN, and SHOW that return human-readable
@@ -147,14 +146,14 @@ def _extract_as_text_cell(
 
     # Return as single column, single row
     column_info = [ColumnInfo(name=column_name, type='varchar', nullable=True)]
-    result_rows = [{column_name: formatted_text}]
+    result_rows: list[dict[str, str | None]] = [{column_name: formatted_text}]
     return column_info, result_rows
 
 
 def _extract_as_tabular_data(
     response: dict[str, Any], has_header_row: bool = True
-) -> tuple[list[ColumnInfo], list[dict[str, str]]]:
-    """Extract tabular data with header detection."""
+) -> tuple[list[ColumnInfo], list[dict[str, str | None]]]:
+    """Extract tabular data."""
     column_info = []
     result_set = response.get('ResultSet', {})
     metadata = result_set.get('ResultSetMetadata', {})
@@ -182,17 +181,19 @@ def _extract_as_tabular_data(
     if not all_rows:
         return column_info, rows
     column_names = [col.name for col in column_info]
-
-    # Skip first row if it contains headers (first page), process all rows otherwise (subsequent pages)
     for row in all_rows[1:] if has_header_row else all_rows:
-        row_data = [col.get('VarCharValue', '') for col in row['Data']]
+        row_data = []
+        for col in row['Data']:
+            if not col:  # Empty dict {} from boto3 means NULL
+                row_data.append(None)
+            else:
+                row_data.append(col.get('VarCharValue', ''))
         if column_names:
             row_dict = dict(zip(column_names, row_data))
             rows.append(row_dict)
         else:
             row_dict = {f'column_{i}': val for i, val in enumerate(row_data)}
             rows.append(row_dict)
-
     return column_info, rows
 
 
@@ -221,7 +222,7 @@ async def execute_query(
         Field(
             min_length=1,
             max_length=262144,
-            description='SQL query to execute. Allowed statements: SELECT, VALUES, DESCRIBE, SHOW, EXPLAIN.',
+            description='SQL query to execute. Allowed read-only statements like SELECT, VALUES, DESCRIBE, SHOW, and EXPLAIN.',
         ),
     ],
     workgroup: Annotated[
@@ -260,28 +261,29 @@ async def execute_query(
 ) -> QueryResults:
     """Execute a read-only SQL query in Athena and return the results.
 
-    - Only allows SELECT, VALUES, DESCRIBE, SHOW, and EXPLAIN operations.
-    - Non-read-only operations such as INSERT, UPDATE, DELETE, CREATE, DROP, and ALTER are not allowed.
+    - Only allows read-only statements like SELECT, VALUES, DESCRIBE, SHOW, and EXPLAIN
+    - Non-read-only operations such as INSERT, UPDATE, DELETE, CREATE, DROP, and ALTER are not allowed
     - When appropriate, use LIMIT clauses, WHERE filters, and select specific columns
-    - Leverage partitioning when appropriate.
+    - Leverage partitioning when appropriate
+    - Results are automatically paginated with a maximum of ~1000 rows per page
 
     Args:
-        query_string: SQL query to execute (SELECT, VALUES, DESCRIBE, SHOW, EXPLAIN)
+        query_string: SQL query to execute
         workgroup: Athena workgroup to use
-        database: Default database for the query context
+        database: Database to use
         output_location: S3 location for query results
         timeout_seconds: Maximum time to wait for query completion (0 for no timeout)
-        region: AWS region to use for the query
+        region: AWS region to use
 
     Returns:
         Query results data containing:
         - column_info: List of column metadata with name, type, nullable status, precision, scale
         - rows: List of dictionaries where each dict represents a row with column names as keys
-        - total_rows: Number of data rows returned (excluding headers)
+        - total_rows: Number of data rows returned in this page
         - query_execution_id: AWS Athena execution ID for reference or pagination
-        - next_token: Pagination token if more results are available (use with get_query_results)
-        - data_scanned_in_bytes: Amount of data scanned by the query (for cost analysis)
-        - execution_time_in_millis: Query execution time in milliseconds (performance metrics)
+        - next_token: Pagination token if more results are available. If None, this is the last page. Use with get_query_results to retrieve additional pages.
+        - data_scanned_in_bytes: Amount of data scanned by the query
+        - execution_time_in_millis: Query execution time in milliseconds
     """
     validate_query(query_string)
 
@@ -313,17 +315,14 @@ async def execute_query(
                     pass  # Ignore errors when cancelling
                 raise TimeoutError(f'Query timed out after {timeout_seconds} seconds')
             await asyncio.sleep(2)
-
         if state == 'FAILED':
             error_reason = execution['Status'].get('StateChangeReason', 'Query failed')
             raise RuntimeError(f'Query failed: {error_reason}')
         elif state == 'CANCELLED':
             raise RuntimeError('Query was cancelled')
-
         results_response = client.get_query_results(
             QueryExecutionId=query_execution_id, MaxResults=1000
         )
-
         column_info, rows = _extract_columns_and_rows(
             results_response, query_string, has_header_row=True
         )
@@ -367,20 +366,20 @@ async def get_query_results(
     """Get results from a completed query execution.
 
     This is mainly used for pagination of large result sets since execute_query returns results
-    directly.
+    directly. Each page contains a maximum of 1000 rows.
 
     Args:
         query_execution_id: Query execution ID from execute_query
-        next_token: Token for pagination
+        next_token: Token for pagination (from previous execute_query or get_query_results call)
         region: AWS region to use for the query
 
     Returns:
         Paginated query results containing:
         - column_info: List of column metadata with name, type, nullable status, precision, scale
-        - rows: List of dictionaries where each dict represents a row with column names as keys
+        - rows: List of dictionaries where each dict represents a row with column names as keys (max 1000 per page)
         - total_rows: Number of data rows returned in this page
-        - query_execution_id: Same execution ID passed in (for reference)
-        - next_token: Token for next page if more results available, None if this is the last page
+        - query_execution_id: Same execution ID passed in
+        - next_token: Token for next page if more results available. If None, this is the last page.
         - data_scanned_in_bytes: Amount of data scanned by the original query
         - execution_time_in_millis: Original query execution time in milliseconds
     """
@@ -431,15 +430,17 @@ async def list_databases(
 ) -> ListDatabasesResponse:
     """List databases in the specified data catalog.
 
+    Results are paginated with a maximum of 50 databases per page.
+
     Args:
         catalog_name: Data catalog name
-        next_token: Token for pagination
+        next_token: Token for pagination (from previous list_databases call)
         region: AWS region to use for the query
 
     Returns:
         Database listing containing:
-        - databases: List of database dictionaries with 'name', 'description', and 'parameters'
-        - next_token: Pagination token for retrieving additional databases, None if no more pages
+        - databases: List of database dictionaries with 'name', 'description', and 'parameters' (max 50 per page)
+        - next_token: Pagination token for retrieving additional databases. If None, this is the last page.
     """
     try:
         client = _get_athena_client(region)
@@ -476,7 +477,7 @@ async def list_tables(
         Field(
             min_length=1,
             max_length=255,
-            description='Database name to list tables from. Must be a valid database name from the data catalog.',
+            description='Name of database to list tables from.',
         ),
     ],
     catalog_name: Annotated[
@@ -500,17 +501,19 @@ async def list_tables(
 ) -> ListTablesResponse:
     """List tables in the specified database.
 
+    Results are paginated with a maximum of 50 tables per page.
+
     Args:
         database_name: Database name
         catalog_name: Data catalog name
         expression: Regular expression to filter table names
-        next_token: Token for pagination
+        next_token: Token for pagination (from previous list_tables call)
         region: AWS region to use for the query
 
     Returns:
         Table listing containing:
-        - tables: List of table summaries with name, table_type, create_time, last_access_time, columns_count, partition_keys_count
-        - next_token: Pagination token for retrieving additional tables, None if no more pages
+        - tables: List of table summaries with name, table_type, create_time, last_access_time, columns_count, partition_keys_count (max 50 per page)
+        - next_token: Pagination token for retrieving additional tables. If None, this is the last page.
     """
     try:
         client = _get_athena_client(region)
@@ -552,14 +555,14 @@ async def get_table_metadata(
         str,
         Field(
             min_length=1,
-            description='Database name containing the table. Must exist in the data catalog.',
+            description='Name of database containing the table.',
         ),
     ],
     table_name: Annotated[
         str,
         Field(
             min_length=1,
-            description='Table name to get metadata for. Must exist in the specified database.',
+            description='Table name to get metadata for.',
         ),
     ],
     catalog_name: Annotated[
@@ -654,14 +657,16 @@ async def list_work_groups(
 ) -> ListWorkgroupsResponse:
     """List available Athena workgroups.
 
+    Results are paginated with a maximum of 50 workgroups per page.
+
     Args:
-        next_token: Token for pagination
+        next_token: Token for pagination (from previous list_work_groups call)
         region: AWS region to use for the query
 
     Returns:
         Workgroup listing containing:
-        - workgroups: List of workgroup summaries with name, state, description, creation_time
-        - next_token: Pagination token for retrieving additional workgroups, None if no more pages
+        - workgroups: List of workgroup summaries with name, state, description, creation_time (max 50 per page)
+        - next_token: Pagination token for retrieving additional workgroups. If None, this is the last page.
     """
     try:
         client = _get_athena_client(region)
@@ -693,9 +698,7 @@ async def list_work_groups(
 async def get_work_group(
     workgroup_name: Annotated[
         str,
-        Field(
-            description='Name of the workgroup to get details for. Must be a valid workgroup name that you have access to.'
-        ),
+        Field(description='Name of the workgroup to get details for.'),
     ],
     region: Annotated[
         str,
@@ -763,14 +766,16 @@ async def list_data_catalogs(
 ) -> ListDataCatalogsResponse:
     """List available data catalogs.
 
+    Results are paginated with a maximum of 50 data catalogs per page.
+
     Args:
-        next_token: Token for pagination
+        next_token: Token for pagination (from previous list_data_catalogs call)
         region: AWS region to use for the query
 
     Returns:
         Data catalog listing containing:
-        - data_catalogs: List of catalog summaries with catalog_name and type (GLUE, HIVE, LAMBDA)
-        - next_token: Pagination token for retrieving additional catalogs, None if no more pages
+        - data_catalogs: List of catalog summaries with catalog_name and type (GLUE, HIVE, LAMBDA) (max 50 per page)
+        - next_token: Pagination token for retrieving additional catalogs. If None, this is the last page.
     """
     try:
         client = _get_athena_client(region)
